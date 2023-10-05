@@ -5,8 +5,6 @@
  *    Implementação do modelo produtor consumidor
  *
  *
- * Compile:  gcc -g -Wall -o etapa2 etapa2.c -lpthread -lrt
- * Usage:    ./etapa2
  *
  * Compile:  mpicc -g -Wall -o etapa3 etapa3.c -lpthread -lrt
  * Usage:    mpiexec -n 3 ./etapa3
@@ -16,6 +14,7 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <pthread.h> 
 #include <unistd.h>
 #include <semaphore.h>
@@ -28,31 +27,26 @@
 
 typedef struct {
     int p[3];
+    int flag;
 } Clock;
 
-pthread_mutex_t outMutex[3];
-pthread_cond_t outCondEmpty[3];
-pthread_cond_t outCondFull[3];
-int outClockCount[3];
-Clock outClockQueue[3][3];
+pthread_mutex_t outMutex;
+pthread_cond_t outCondEmpty;
+pthread_cond_t outCondFull;
+int outClockCount = 0;
+Clock outClockQueue[3];
 
-pthread_mutex_t inMutex[3];
-pthread_cond_t inCondEmpty[3];
-pthread_cond_t inCondFull[3];
-int inClockCount[3];
-Clock inClockQueue[3][3];
+pthread_mutex_t inMutex;
+pthread_cond_t inCondEmpty;
+pthread_cond_t inCondFull;
+int inClockCount = 0;
+Clock inClockQueue[3];
 
-void printClock(Clock* clock, int id){
-   printf("Teste - Process: %d, Clock: (%d, %d, %d)\n", id, clock->p[0], clock->p[1], clock->p[2]);
-}
 
-Clock* CompareClock(Clock* clock, Clock* clock1){
-    printf("Comparing (%d, %d, %d) and (%d, %d, %d)\n", clock->p[0], clock->p[1],clock->p[2], clock1->p[0],clock1->p[1], clock1->p[2]);
+void CompareClock(Clock* clock, Clock* clock1){
     if (clock->p[0] < clock1->p[0]) { clock->p[0] = clock1->p[0]; }
     if (clock->p[1] < clock1->p[1]) { clock->p[1] = clock1->p[1]; }
     if (clock->p[2] < clock1->p[2]) { clock->p[2] = clock1->p[2]; }
-    printf("Return (%d, %d, %d)\n", clock->p[0], clock->p[1], clock->p[2]);
-    return clock;
 }
 
 void Event(int pid, Clock *clock) {
@@ -60,18 +54,15 @@ void Event(int pid, Clock *clock) {
     printf("Process: %d, Clock: (%d, %d, %d)\n", pid, clock->p[0], clock->p[1], clock->p[2]);
 }
 
-void GetClock(pthread_mutex_t *mutex, pthread_cond_t *condEmpty, pthread_cond_t *condFull, int *clockCount, Clock *clockQueue, Clock *clock) {
+Clock GetClock(pthread_mutex_t *mutex, pthread_cond_t *condEmpty, pthread_cond_t *condFull, int *clockCount, Clock *clockQueue) {
+    Clock clock;
     pthread_mutex_lock(mutex);
-
+    
     while (*clockCount == 0) {
         pthread_cond_wait(condEmpty, mutex);
-        //printf("Wait get.\n");
     }
-    //printf("Pass get\n");
 
-    *clock = clockQueue[0];
-    
-    //printClock(clock, 5);
+    clock = clockQueue[0];
 
     for (int i = 0; i < *clockCount - 1; i++) {
         clockQueue[i] = clockQueue[i + 1];
@@ -82,19 +73,24 @@ void GetClock(pthread_mutex_t *mutex, pthread_cond_t *condEmpty, pthread_cond_t 
     pthread_mutex_unlock(mutex);
 
     pthread_cond_signal(condFull);
+    
+    return clock;
 }
 
-void PutClock(pthread_mutex_t *mutex, pthread_cond_t *condEmpty, pthread_cond_t *condFull, int *clockCount, Clock *clock, Clock *clockQueue) {
+
+
+void PutClock(pthread_mutex_t *mutex, pthread_cond_t *condEmpty, pthread_cond_t *condFull, int *clockCount, Clock clock, Clock *clockQueue) {
     pthread_mutex_lock(mutex);
 
     while (*clockCount == 3) {
         pthread_cond_wait(condFull, mutex);
-        //printf("Wait. put\n");
     }
-    //printf("Pass put\n");
+    
+    Clock temp = clock;
 
-    clockQueue[*clockCount] = *clock;
+    clockQueue[*clockCount] = temp;
     (*clockCount)++;
+    
 
     pthread_mutex_unlock(mutex);
     pthread_cond_signal(condEmpty);
@@ -102,102 +98,96 @@ void PutClock(pthread_mutex_t *mutex, pthread_cond_t *condEmpty, pthread_cond_t 
 
 void SendControl(int id, pthread_mutex_t *mutex, pthread_cond_t *condEmpty, pthread_cond_t *condFull, int *clockCount, Clock *clock, Clock *clockQueue){
     Event(id, clock);
-    //printf("Process: %d, Clock: (%d, %d, %d)\n", id, clock->p[0], clock->p[1], clock->p[2]);
-    PutClock(mutex, condEmpty, condFull, clockCount, clock, clockQueue);
+    PutClock(mutex, condEmpty, condFull, clockCount, *clock, clockQueue);
 }
 
-void ReceiveControl(int id, pthread_mutex_t *mutex, pthread_cond_t *condEmpty, pthread_cond_t *condFull, int *clockCount, Clock *clock, Clock *clockQueue){
-    Clock *clock2;
-    clock->p[id]++;
-    printf("Before Rget\n");
-    GetClock(mutex, condEmpty, condFull, clockCount, clockQueue, clock2);
-    printf("After Rget\n");
-    clock = CompareClock(clock, clock2);
+Clock* ReceiveControl(int id, pthread_mutex_t *mutex, pthread_cond_t *condEmpty, pthread_cond_t *condFull, int *clockCount, Clock *clockQueue, Clock *clock){
+    Clock* temp = clock;
+    Clock clock2 = GetClock(mutex, condEmpty, condFull, clockCount, clockQueue);
+    CompareClock(temp, &clock2);
+    temp->p[id]++;
     printf("Process: %d, Clock: (%d, %d, %d)\n", id, clock->p[0], clock->p[1], clock->p[2]);
+    return temp;
 }
 
-void Send(int pid, int destino, Clock *clock){
+void Send(int pid, Clock *clock){
    int mensagem[3];
-   MPI_Status status;
    mensagem[0] = clock->p[0];
    mensagem[1] = clock->p[1];
    mensagem[2] = clock->p[2];
    //MPI SEND
-   MPI_Send(&mensagem, 3, MPI_INT, destino, pid, MPI_COMM_WORLD);
-   printf("Sent message with tag %d: %d %d %d\n", pid, mensagem[0], mensagem[1], mensagem[2]);
+   MPI_Send(&mensagem, 3, MPI_INT, clock->flag, 0, MPI_COMM_WORLD);
 }
 
-void Receive(int pid, int origem, Clock *clock){
-   int mensagem[3];
-   MPI_Status status;
+void SendClock(int pid){
+  Clock clock = GetClock(&outMutex, &outCondEmpty, &outCondFull, &outClockCount, outClockQueue);
+  Send(pid, &clock);
+}
+
+void Receive(int pid, Clock *clock){
+    int mensagem[3];
     //MPI RECV
-   MPI_Recv(&mensagem, 3, MPI_INT, origem, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-   printf("Process %d Received message with tag %d: %d %d %d\n", pid, status.MPI_TAG, mensagem[0], mensagem[1], mensagem[2]);
-   /*if (clock->p[0] < mensagem[0]) { clock->p[0] = mensagem[0]; }
-   if (clock->p[1] < mensagem[1]) { clock->p[1] = mensagem[1]; }
-   if (clock->p[2] < mensagem[2]) { clock->p[2] = mensagem[2]; }*/
+    MPI_Recv(&mensagem, 3, MPI_INT, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    clock->p[0] = mensagem[0];
+    clock->p[1] = mensagem[1];
+    clock->p[2] = mensagem[2];
 }
 
 void *MainThread(void *args) {
-    long pid = (long) args;
-    Clock clock = {{0, 0, 0}};
-    Clock clock2 = {{0, 0, 0}};
+    long id = (long) args;
+    int pid = (int) id;
+    Clock* clock = malloc(sizeof(Clock));
+    memset(clock, 0, sizeof(Clock)); 
     
-    //int mensagem[3];
-
     switch (pid) {
         case 0:
             //a - Event
-            printf("a) ");
-            Event(pid, &clock);
-            
+            Event(pid, clock);
             
             //b - Send
-            printf("b) ");
-            SendControl(pid, &outMutex[0], &outCondEmpty[0], &outCondFull[0], &outClockCount[0], &clock, outClockQueue[0]);
+            clock->flag = 1;
+            SendControl(pid, &outMutex, &outCondEmpty, &outCondFull, &outClockCount, clock, outClockQueue);
             
             //c - Receive
-            printf("c) ");
-            ReceiveControl(pid, &inMutex[0], &inCondEmpty[0], &inCondFull[0], &inClockCount[0], inClockQueue[0], &clock2);
+            clock = ReceiveControl(pid, &inMutex, &inCondEmpty, &inCondFull, &inClockCount, inClockQueue, clock);
             
             //d - Send
-            printf("d) ");
-            SendControl(pid, &outMutex[0], &outCondEmpty[0], &outCondFull[0], &outClockCount[0], &clock, outClockQueue[0]);
+            clock->flag = 2;
+            SendControl(pid, &outMutex, &outCondEmpty, &outCondFull, &outClockCount, clock, outClockQueue);
             
             //e - Receive
-            printf("e) ");
-            ReceiveControl(pid, &inMutex[0], &inCondEmpty[0], &inCondFull[0], &inClockCount[0], inClockQueue[0], &clock2);
-            //clock = CompareClock(clock, clock2);
+            clock = ReceiveControl(pid, &inMutex, &inCondEmpty, &inCondFull, &inClockCount, inClockQueue, clock);
             
             //f - Send
-            printf("f) ");
-            SendControl(pid, &outMutex[0], &outCondEmpty[0], &outCondFull[0], &outClockCount[0], &clock, outClockQueue[0]);
+            clock->flag = 1;
+            SendControl(pid, &outMutex, &outCondEmpty, &outCondFull, &outClockCount, clock, outClockQueue);
 
             //g - Event
-            printf("g) ");
-            Event(pid, &clock);
+            Event(pid, clock);
             break;
 
         case 1:
-            printf("h) ");
-            SendControl(pid, &outMutex[1], &outCondEmpty[1], &outCondFull[1], &outClockCount[1], &clock, outClockQueue[1]);
+            //h - Send
+            clock->flag = 0;
+            SendControl(pid, &outMutex, &outCondEmpty, &outCondFull, &outClockCount, clock, outClockQueue);
             
-            printf("i) ");
-            ReceiveControl(pid, &inMutex[1], &inCondEmpty[1], &inCondFull[1], &inClockCount[1], inClockQueue[1], &clock);
+            //i - Receive
+            clock = ReceiveControl(pid, &inMutex, &inCondEmpty, &inCondFull, &inClockCount, inClockQueue, clock);
             
-            printf("j) ");
-            ReceiveControl(pid, &inMutex[1], &inCondEmpty[1], &inCondFull[1], &inClockCount[1], inClockQueue[1], &clock);
+            //j - Receive
+            clock = ReceiveControl(pid, &inMutex, &inCondEmpty, &inCondFull, &inClockCount, inClockQueue, clock);
             break;
 
         case 2:
-            printf("k) ");
-            Event(pid, &clock);
+            //k - Event
+            Event(pid, clock);
             
-            printf("l) ");
-            SendControl(pid, &outMutex[2], &outCondEmpty[2], &outCondFull[2], &outClockCount[2], &clock, outClockQueue[2]);
+            //l - Send
+            clock->flag = 0;
+            SendControl(pid, &outMutex, &outCondEmpty, &outCondFull, &outClockCount, clock, outClockQueue);
             
-            printf("m) ");
-            ReceiveControl(pid, &inMutex[2], &inCondEmpty[2], &inCondFull[2], &inClockCount[2], inClockQueue[2], &clock);
+            //m - Receive
+            clock = ReceiveControl(pid, &inMutex, &inCondEmpty, &inCondFull, &inClockCount, inClockQueue, clock);
             break;
 
         default:
@@ -210,99 +200,26 @@ void *MainThread(void *args) {
 void *SendThread(void *args) {
     long pid = (long) args;
     Clock clock;
-    //int mensagem[3];
-    //MPI_Status status;
-    //int tag;
-
-    switch (pid) {
-        case 0:
-            GetClock(&outMutex[0], &outCondEmpty[0], &outCondFull[0], &outClockCount[0], outClockQueue[0], &clock);
-            printf("Processo %ld tirou da fila %d %d %d\n", pid, clock.p[0], clock.p[1], clock.p[2]);
-            //mensagem[0] = clock.p[0];
-            //mensagem[1] = clock.p[1];
-            //mensagem[2] = clock.p[2];
-            Send(pid, 1, &clock);
-            
-            GetClock(&outMutex[0], &outCondEmpty[0], &outCondFull[0], &outClockCount[0], outClockQueue[0], &clock);
-            printf("Processo %ld tirou da fila %d %d %d\n", pid, clock.p[0], clock.p[1], clock.p[2]);
-            //mensagem[0] = clock.p[0];
-            //mensagem[1] = clock.p[1];
-            //mensagem[2] = clock.p[2];
-            Send(pid, 2, &clock);
-            
-            
-            GetClock(&outMutex[0], &outCondEmpty[0], &outCondFull[0], &outClockCount[0], outClockQueue[0], &clock);
-            printf("Processo %ld tirou da fila %d %d %d\n", pid, clock.p[0], clock.p[1], clock.p[2]);
-            //mensagem[0] = clock.p[0];
-            //mensagem[1] = clock.p[1];
-            //mensagem[2] = clock.p[2];
-            Send(pid, 1, &clock);
-            break;
-
-        case 1:
-            GetClock(&outMutex[1], &outCondEmpty[1], &outCondFull[1], &outClockCount[1], outClockQueue[1], &clock);
-            printf("Processo %ld tirou da fila %d %d %d\n", pid, clock.p[0], clock.p[1], clock.p[2]);
-            //mensagem[0] = clock.p[0];
-            //mensagem[1] = clock.p[1];
-            //mensagem[2] = clock.p[2];
-            Send(pid, 0, &clock);
-            break;
-
-        case 2:
-            GetClock(&outMutex[2], &outCondEmpty[2], &outCondFull[2], &outClockCount[2], outClockQueue[2], &clock);
-            printf("Processo %ld tirou da fila %d %d %d\n", pid, clock.p[0], clock.p[1], clock.p[2]);
-            //mensagem[0] = clock.p[0];
-            //mensagem[1] = clock.p[1];
-            //mensagem[2] = clock.p[2];
-            Send(pid, 0, &clock);
-            break;
-
-        default:
-            break;
+    
+    while(1){
+      clock = GetClock(&outMutex, &outCondEmpty, &outCondFull, &outClockCount, outClockQueue);
+      Send(pid, &clock);
     }
 
     return NULL;
 }
 
 
+
 void *ReceiveThread(void *args) {
     long pid = (long) args;
     Clock clock;
-    //MPI_Status status;
-    //int tag;
-    //int mensagem[3] = {0,0,0};
-    switch (pid) {
-        case 0:
-            printf("Case 0r\n");
-            
-            Receive(pid, 1, &clock);
-            //printClock(&clock, pid);
-            PutClock(&inMutex[0], &inCondEmpty[0], &inCondFull[0], &inClockCount[0], &clock, inClockQueue[0]);
-            
-            Receive(pid, 2, &clock);
-            //printClock(&clock, pid);
-            PutClock(&inMutex[0], &inCondEmpty[0], &inCondFull[0], &inClockCount[0], &clock, inClockQueue[0]);
-            break;
 
-        case 1:
-            printf("Case 1r\n");
-            Receive(pid, 0, &clock);
-            PutClock(&inMutex[1], &inCondEmpty[1], &inCondFull[1], &inClockCount[1], &clock, inClockQueue[1]);
-            
-            Receive(pid, 0, &clock);
-            PutClock(&inMutex[1], &inCondEmpty[1], &inCondFull[1], &inClockCount[1], &clock, inClockQueue[1]);
-            break;
-
-        case 2:
-            printf("Case 2r\n");
-            Receive(pid, 0, &clock);
-            PutClock(&inMutex[2], &inCondEmpty[2], &inCondFull[2], &inClockCount[2], &clock, inClockQueue[2]);
-            break;
-
-        default:
-            break;
+    while(1){
+      Receive(pid, &clock);
+      PutClock(&inMutex, &inCondEmpty, &inCondFull, &inClockCount, clock, inClockQueue);
     }
-
+ 
     return NULL;
 }
 
@@ -311,7 +228,6 @@ void *ReceiveThread(void *args) {
 // Representa o processo de rank 0
 void process0(){
    pthread_t thread[3];
-   
    pthread_create(&thread[0], NULL, &MainThread, (void*) 0);
    pthread_create(&thread[1], NULL, &SendThread, (void*) 0);
    pthread_create(&thread[2], NULL, &ReceiveThread, (void*) 0);
@@ -319,7 +235,7 @@ void process0(){
    for (int i = 0; i < 3; i++){  
       if (pthread_join(thread[i], NULL) != 0) {
          perror("Failed to join the thread");
-      }  
+      }
    }
    
 }
@@ -327,7 +243,6 @@ void process0(){
 // Representa o processo de rank 1
 void process1(){
    pthread_t thread[3];
-   
    pthread_create(&thread[0], NULL, &MainThread, (void*) 1);
    pthread_create(&thread[1], NULL, &SendThread, (void*) 1);
    pthread_create(&thread[2], NULL, &ReceiveThread, (void*) 1);
@@ -335,7 +250,7 @@ void process1(){
    for (int i = 0; i < THREAD_NUM; i++){  
       if (pthread_join(thread[i], NULL) != 0) {
          perror("Failed to join the thread");
-      }  
+      }
    }
    
 }
@@ -343,7 +258,6 @@ void process1(){
 // Representa o processo de rank 2
 void process2(){
    pthread_t thread[3];
-   
    pthread_create(&thread[0], NULL, &MainThread, (void*) 2);
    pthread_create(&thread[1], NULL, &SendThread, (void*) 2);
    pthread_create(&thread[2], NULL, &ReceiveThread, (void*) 2);
@@ -351,26 +265,22 @@ void process2(){
    for (int i = 0; i < 3; i++){  
       if (pthread_join(thread[i], NULL) != 0) {
          perror("Failed to join the thread");
-      }  
+      }
    }
    
 }
-
-//Clock globalClock;
 
 
 /*--------------------------------------------------------------------*/
 int main(int argc, char* argv[]) {
    int my_rank;
    
-   for (int i = 0; i < 3; i++){
-      pthread_mutex_init(&inMutex[i], NULL);
-      pthread_mutex_init(&outMutex[i], NULL);
-      pthread_cond_init(&inCondEmpty[i], NULL);
-      pthread_cond_init(&outCondEmpty[i], NULL);
-      pthread_cond_init(&inCondFull[i], NULL);
-      pthread_cond_init(&outCondFull[i], NULL);
-   }
+      pthread_mutex_init(&inMutex, NULL);
+      pthread_mutex_init(&outMutex, NULL);
+      pthread_cond_init(&inCondEmpty, NULL);
+      pthread_cond_init(&outCondEmpty, NULL);
+      pthread_cond_init(&inCondFull, NULL);
+      pthread_cond_init(&outCondFull, NULL);
   
    
    MPI_Init(NULL, NULL); 
@@ -387,18 +297,16 @@ int main(int argc, char* argv[]) {
    /* Finaliza MPI */
    
    
-   for (int i = 0; i < 3; i++){
-      pthread_mutex_destroy(&inMutex[i]);
-      pthread_mutex_destroy(&outMutex[i]);
-      pthread_cond_destroy(&inCondEmpty[i]);
-      pthread_cond_destroy(&outCondEmpty[i]);
-      pthread_cond_destroy(&inCondFull[i]);
-      pthread_cond_destroy(&outCondFull[i]);
-   }
+      pthread_mutex_destroy(&inMutex);
+      pthread_mutex_destroy(&outMutex);
+      pthread_cond_destroy(&inCondEmpty);
+      pthread_cond_destroy(&outCondEmpty);
+      pthread_cond_destroy(&inCondFull);
+      pthread_cond_destroy(&outCondFull);
+   
    MPI_Finalize();
 
    return 0;
 }  /* main */
 
 /*-------------------------------------------------------------------*/
-
